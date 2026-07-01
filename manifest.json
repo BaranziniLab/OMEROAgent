@@ -1,0 +1,47 @@
+{
+  "name": "omeroagent",
+  "display_name": "OMEROAgent",
+  "description": "MCP access pattern for OMERO image repositories, project/dataset/image metadata, and web/API endpoint inspection for microscopy data review.",
+  "version": "0.1.0",
+  "entry_point": "omeroagent",
+  "repository": "https://github.com/BaranziniLab/OMEROAgent",
+  "license": "Apache-2.0",
+  "tools_count": 4,
+  "env_vars": [
+    {
+      "key": "OMERO_BASE_URL",
+      "required": true,
+      "auto_propagate": true,
+      "description": "OMERO web/API base URL",
+      "secret": false
+    },
+    {
+      "key": "OMERO_USERNAME",
+      "required": false,
+      "auto_propagate": false,
+      "description": "OMERO username if the server requires basic auth or token exchange",
+      "secret": true
+    },
+    {
+      "key": "OMERO_PASSWORD",
+      "required": false,
+      "auto_propagate": false,
+      "description": "OMERO password or token if the server requires it",
+      "secret": true
+    },
+    {
+      "key": "OMERO_LOG_LEVEL",
+      "required": false,
+      "auto_propagate": true,
+      "default": "INFO",
+      "description": "Logging level",
+      "secret": false
+    }
+  ],
+  "skills": [
+    {
+      "name": "omero-imaging-data",
+      "description": "Use OMEROAgent for OMERO platform-aware scientific workflow inspection and guarded API access."
+    }
+  ]
+}
