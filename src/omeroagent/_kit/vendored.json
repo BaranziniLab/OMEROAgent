@@ -1,13 +1,13 @@
 {
-  "kit_version": "1.0.0",
+  "kit_version": "1.0.1",
   "files": {
-    "src/omeroagent/_kit/__init__.py": "9d43b5034c956157c726bc1ff065fad3feb0aa28f2fe40cea44520f4a51b2aa0",
-    "src/omeroagent/_kit/safe_http.py": "cf2bdef29ffa4903a991572585e210b88a2feea170290033f73df4bbafa6b07d",
+    "src/omeroagent/_kit/__init__.py": "760431ac2b58ee1708b84e680c1336af54031a701f355a7c799e9c2f474e59a1",
+    "src/omeroagent/_kit/safe_http.py": "199197d7671c4edf05e35a49ed60d1a72bb2a11979bc25ecb4efda0b1e88166d",
     "src/omeroagent/_kit/spec.py": "b5ca55ebb99f38a1ea932fcb3347bbde20a1c186b04a55bcb25e4596153ad797",
-    "src/omeroagent/_kit/tools.py": "472617d4b4d06ede45124d322c2df6a9b283106e1042a59f72e2195fddf8719d",
+    "src/omeroagent/_kit/tools.py": "5801e4a5d0f90edf9e91bd89f86a6b6e07fc7955bcb168221ce6dd7f99446bb3",
     "tests/kit_testing/__init__.py": "952c691107878f8e29833a9d3c51dfbe1a986d8e3373b666ced0b21096e9481a",
-    "tests/kit_testing/echo_server.py": "88f6999853c208e9b16f201a024c54bd64d6c126998912acc4361cf2c3f4f36e",
-    "tests/kit_testing/leak_suite.py": "9f2a04658ec271f908fa8ff4540e272d301baaa11a6145c06bba64edb79ffa76",
+    "tests/kit_testing/echo_server.py": "ae0a9ae842e013779b3c05391d5073e37173ef1d772ba0551551b0cd1f4d66cf",
+    "tests/kit_testing/leak_suite.py": "3a6a0eb5bb40f9f35389267ff90d2257cd0b5931239b4d169072e3ffe7d7e186",
     "tests/kit_testing/stdio_probe.py": "c84c6da4f0abb4356ea9488fafec388b1b05dc8a2a128ad7d654c42d85e429b9"
   }
 }

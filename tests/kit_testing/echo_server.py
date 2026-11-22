@@ -17,6 +17,13 @@ Behaviour, selected by query parameters so it works under any route:
   answer with that redirect.
 * ``__bytes=<n>``: answer with ``n`` bytes of text.
 * ``__gzip_bytes=<n>``: answer with ``n`` zero bytes, gzip compressed.
+* ``__gzip_members=<n>``, with ``__member_bytes=<m>`` (default 1000): answer
+  with ``n`` gzip members of ``m`` bytes each, labelled ``Content-Encoding:
+  gzip``, which is what bgzip writes. ``gzip_member(k, m)`` is member ``k``'s
+  content, so a test can check the order.
+* ``__gzip_tail=<n>``: answer with the gzip stream of ``hi`` followed by ``n``
+  zero bytes, streamed until the client stops reading.
+* ``__bad_gzip=1``: answer with a body labelled gzip that is not gzip.
 * ``__sleep=<seconds>``: wait before answering.
 * ``__status=<code>``: answer with that status.
 * ``__binary=1``: answer with binary content.
@@ -41,6 +48,12 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Optional
+
+
+def gzip_member(index: int, size: int) -> bytes:
+    """The content of member ``index`` of a ``__gzip_members`` reply."""
+
+    return (f"member-{index:06d};".encode() * (size // 14 + 1))[:size]
 
 
 @dataclass
@@ -243,6 +256,18 @@ class _Handler(BaseHTTPRequestHandler):
             payload = gzip.compress(b"\0" * int(options["__gzip_bytes"]))
             self._reply(status, "text/plain", payload, encoding="gzip")
             return
+        if "__gzip_members" in options:
+            size = int(options.get("__member_bytes", "1000"))
+            payload = b"".join(gzip.compress(gzip_member(k, size)) for k in range(int(options["__gzip_members"])))
+            self._reply(status, "text/plain", payload, encoding="gzip")
+            return
+        if "__gzip_tail" in options:
+            self._stream_gzip_tail(status, int(options["__gzip_tail"]))
+            return
+        if "__bad_gzip" in options:
+            bad = b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\xff" + b"\x01\x05\x00\x00\x00hello" + b"\0" * 64
+            self._reply(status, "text/plain", bad, encoding="gzip")
+            return
         if "__binary" in options:
             self._reply(status, "application/octet-stream", bytes(range(256)))
             return
@@ -257,6 +282,22 @@ class _Handler(BaseHTTPRequestHandler):
             }
         ).encode()
         self._reply(status, "application/json", payload)
+
+    def _stream_gzip_tail(self, status: int, tail_bytes: int) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Encoding", "gzip")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+        chunk = b"\0" * (1 << 20)
+        try:
+            self.wfile.write(gzip.compress(b"hi"))
+            while tail_bytes > 0:
+                self.wfile.write(chunk[:tail_bytes])
+                tail_bytes -= len(chunk)
+        except OSError:
+            pass  # the client stopped reading, as it should
 
     def _reply(self, status: int, content_type: str, payload: bytes, encoding: Optional[str] = None) -> None:
         self.send_response(status)

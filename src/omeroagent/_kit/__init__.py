@@ -15,6 +15,6 @@ Modules:
   ``<svc>_write``) and the sunset and tombstone servers.
 """
 
-KIT_VERSION = "1.0.0"
+KIT_VERSION = "1.0.1"
 
 __all__ = ["KIT_VERSION"]

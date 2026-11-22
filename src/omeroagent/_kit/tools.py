@@ -34,6 +34,7 @@ from .safe_http import WRITE_METHODS, KitError, RequestRefused, NotConfigured, S
 from .spec import AdapterSpec
 
 JsonBody = Optional[Union[dict[str, Any], list[Any]]]
+TIMEOUT_HELP = "Time limit in seconds. The default, and the most, is the target's own limit."
 
 
 def _result(payload: Any) -> ToolResult:
@@ -190,7 +191,7 @@ def build_server(
     target_help = "Which declared target to call. There is no custom target."
 
     def status() -> ToolResult:
-        return _result(_status_payload(spec, version, http))
+        return _call(http, lambda: _status_payload(spec, version, http))
 
     mcp.tool(
         status,
@@ -215,7 +216,7 @@ def build_server(
         query: Optional[dict[str, Any]] = Field(default=None, description="Query parameters as names and values."),
         json_body: JsonBody = Field(default=None, description="JSON body, only for read routes that use POST."),
         accept: Optional[str] = Field(default=None, description="Response media type, default application/json."),
-        timeout_s: float = Field(default=30.0, ge=1.0, le=120.0, description="Time limit in seconds."),
+        timeout_s: Optional[float] = Field(default=None, ge=1.0, le=120.0, description=TIMEOUT_HELP),
     ) -> ToolResult:
         return _call(
             http,
@@ -251,7 +252,7 @@ def build_server(
             path: str = Field(description="Path of a declared write route, relative to the target's base URL."),
             query: Optional[dict[str, Any]] = Field(default=None, description="Query parameters as names and values."),
             json_body: JsonBody = Field(default=None, description="JSON body to send."),
-            timeout_s: float = Field(default=30.0, ge=1.0, le=120.0, description="Time limit in seconds."),
+            timeout_s: Optional[float] = Field(default=None, ge=1.0, le=120.0, description=TIMEOUT_HELP),
         ) -> ToolResult:
             return _call(
                 http,

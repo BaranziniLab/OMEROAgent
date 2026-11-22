@@ -26,11 +26,19 @@ enforces:
    and not followed, so no header or query value ever reaches another host.
 5. A read is GET, or POST on a route the target declares as a read route. A write
    uses a method and route the target declares. A read never sends a write
-   method.
+   method, and it does not reach the path of a declared write route (also as a
+   server may read the path: percent decoded, a ``;`` parameter cut, a final
+   extension dropped, case folded), because some services run an action
+   whatever the method. Only a read route that lies within the write route's
+   pattern opens such a path to a read, and never with the write's own method;
+   a read POST route that could reach a write route otherwise is refused when
+   it is declared.
 6. Request bodies, response bodies and waits are capped. Compressed responses
-   are inflated in bounded steps. Every secret value the adapter holds, in every
-   encoding the kit sends it in, is removed from anything returned to the model,
-   including error messages.
+   are inflated in bounded steps, the raw bytes read are capped as well, and
+   nothing after the end of the compressed data is read or kept (a gzip body
+   may hold several members, which are inflated in turn). Every secret value
+   the adapter holds, in every encoding the kit sends it in, is removed from
+   anything returned to the model, including error messages.
 7. The HTTP library's own log lines print full URLs, so a query credential would
    reach the log. They are silenced here, and the kit never logs a header, a
    query string or a body.
@@ -46,6 +54,7 @@ import os
 import re
 import ssl
 import time
+import unicodedata
 import urllib.parse
 import zlib
 from dataclasses import dataclass
@@ -70,6 +79,11 @@ MAX_PATH_LENGTH = 4096
 MAX_PATH_SEGMENTS = 256
 MAX_QUERY_ITEMS = 200
 MAX_QUERY_VALUE_LENGTH = 8192
+MAX_ACCEPT_LENGTH = 256
+# Raw bytes a reply may carry beyond what its decoded body may hold: headers of
+# gzip members, deflate block overhead. Past it the read stops, so a body that
+# decodes to little cannot keep the kit reading.
+RAW_READ_SLACK_BYTES = 1 << 20
 REDACTED = "[REDACTED]"
 MIN_REDACTION_LENGTH = 6
 
@@ -81,16 +95,19 @@ _DNS_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
 _HOST = re.compile(r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?")
 _HEADER_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,63}")
 _QUERY_PARAM = re.compile(r"[A-Za-z0-9_.\-\[\]]{1,64}")
+# Spaces and tabs only: \s would also admit CR, LF and other line breaks.
 _MEDIA_RANGE = re.compile(
-    r"[A-Za-z0-9.+*-]+/[A-Za-z0-9.+*-]+(?:\s*;\s*[A-Za-z0-9.+-]+=[A-Za-z0-9.+-]+)*"
+    r"[A-Za-z0-9.+*-]+/[A-Za-z0-9.+*-]+(?:[ \t]*;[ \t]*[A-Za-z0-9.+-]+=[A-Za-z0-9.+-]+)*"
 )
 _ACCEPT = re.compile(
-    rf"{_MEDIA_RANGE.pattern}(?:\s*,\s*{_MEDIA_RANGE.pattern}){{0,7}}"
+    rf"{_MEDIA_RANGE.pattern}(?:[ \t]*,[ \t]*{_MEDIA_RANGE.pattern}){{0,7}}"
 )
 _FULL_URL = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*://")
 _PLACEHOLDER = re.compile(r"\{([A-Z][A-Z0-9_]*)\}")
 _CONTROL_OR_SPACE = re.compile(r"[\x00-\x20\x7f]")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+_PERCENT_U = re.compile(r"%u[0-9A-Fa-f]{4}")
+_GLOB_CHARS = frozenset("*?[")
 
 # Headers a target may not set statically: the credential, the connection and
 # anything that would let a static value stand in for one.
@@ -272,6 +289,17 @@ class Target:
         for route in self.write_routes:
             if not isinstance(route, WriteRoute):
                 raise SpecError(f"{self.name}: write_routes holds WriteRoute values.")
+        for pattern in self.read_post_routes:
+            for route in self.write_routes:
+                if _patterns_overlap(pattern, route.pattern) and (
+                    route.method == "POST" or not _pattern_within(pattern, route.pattern)
+                ):
+                    raise SpecError(
+                        f"{self.name}: the read route POST {pattern} can reach the write route {route.method} "
+                        f"{route.pattern}, so a write could run through the read tool without the person's "
+                        "approval. A read POST route may not reach a POST write route at all, and may reach one "
+                        "with another method only when it lies within that route. Narrow one of the two."
+                    )
         seen_headers = set()
         for name, value in self.headers:
             lowered = name.lower()
@@ -281,7 +309,7 @@ class Target:
                 raise SpecError(f"{self.name}: header {name!r} is declared twice.")
             if self.credential and self.credential.header_name and lowered == self.credential.header_name.lower():
                 raise SpecError(f"{self.name}: header {name!r} is the credential header.")
-            if not isinstance(value, str) or len(value) > 512 or _CONTROL.search(value):
+            if not isinstance(value, str) or len(value) > 512 or not value.isascii() or _CONTROL.search(value):
                 raise SpecError(f"{self.name}: header {name!r} needs a short printable value.")
             seen_headers.add(lowered)
         for param, env in self.env_query:
@@ -353,10 +381,182 @@ def _match_parts(pattern: tuple[str, ...], path: tuple[str, ...]) -> bool:
     return fnmatch.fnmatchcase(path[0], head) and _match_parts(pattern[1:], path[1:])
 
 
+def _pattern_parts(pattern: str) -> tuple[str, ...]:
+    return tuple(pattern.strip("/").split("/")) if pattern.strip("/") else ()
+
+
+def _has_glob(segment: str) -> bool:
+    return any(c in _GLOB_CHARS for c in segment)
+
+
+_STAR, _ONE = "*", "?"
+
+
+def _segment_tokens(segment: str) -> list[Union[str, tuple[str]]]:
+    """A segment pattern as tokens: ``*``, one character of any kind, or a literal character.
+
+    A ``[...]`` class is read as one character of any kind, so the overlap test
+    below can only answer yes more often than the exact one would.
+    """
+
+    tokens: list[Union[str, tuple[str]]] = []
+    i = 0
+    while i < len(segment):
+        c = segment[i]
+        if c == "*":
+            if not tokens or tokens[-1] != _STAR:
+                tokens.append(_STAR)
+        elif c == "?":
+            tokens.append(_ONE)
+        elif c == "[":
+            j = i + 1
+            if j < len(segment) and segment[j] == "!":
+                j += 1
+            if j < len(segment) and segment[j] == "]":
+                j += 1
+            end = segment.find("]", j)
+            if end == -1:
+                tokens.append((c,))  # fnmatch reads an unclosed '[' as itself
+            else:
+                tokens.append(_ONE)
+                i = end
+        else:
+            tokens.append((c,))
+        i += 1
+    return tokens
+
+
+def _segments_overlap(a: str, b: str) -> bool:
+    """Whether some one segment matches both segment patterns."""
+
+    if not _has_glob(a) and not _has_glob(b):
+        return a == b
+    if not _has_glob(a):
+        return fnmatch.fnmatchcase(a, b)
+    if not _has_glob(b):
+        return fnmatch.fnmatchcase(b, a)
+    ta, tb = _segment_tokens(a), _segment_tokens(b)
+    seen: set[tuple[int, int]] = set()
+    stack = [(0, 0)]
+    while stack:
+        i, j = stack.pop()
+        if (i, j) in seen:
+            continue
+        seen.add((i, j))
+        if i == len(ta) and j == len(tb):
+            return True
+        if i < len(ta) and ta[i] == _STAR:
+            stack.append((i + 1, j))
+        if j < len(tb) and tb[j] == _STAR:
+            stack.append((i, j + 1))
+        if i < len(ta) and j < len(tb):
+            x, y = ta[i], tb[j]
+            if x in (_STAR, _ONE) or y in (_STAR, _ONE) or x == y:
+                stack.append((i if x == _STAR else i + 1, j if y == _STAR else j + 1))
+    return False
+
+
+def _patterns_overlap(a: str, b: str) -> bool:
+    """Whether some path matches both route patterns. It may answer yes for a pair that has none, never no for one that has."""
+
+    pa, pb = _pattern_parts(a), _pattern_parts(b)
+    seen: set[tuple[int, int]] = set()
+    stack = [(0, 0)]
+    while stack:
+        i, j = stack.pop()
+        if (i, j) in seen:
+            continue
+        seen.add((i, j))
+        if i == len(pa) and j == len(pb):
+            return True
+        if i < len(pa) and pa[i] == "**":
+            stack.append((i + 1, j))
+            if j < len(pb):
+                stack.append((i, j + 1))
+        if j < len(pb) and pb[j] == "**":
+            stack.append((i, j + 1))
+            if i < len(pa):
+                stack.append((i + 1, j))
+        if i < len(pa) and j < len(pb) and "**" not in (pa[i], pb[j]) and _segments_overlap(pa[i], pb[j]):
+            stack.append((i + 1, j + 1))
+    return False
+
+
+def _pattern_within(inner: str, outer: str) -> bool:
+    """Whether every path ``inner`` matches is matched by ``outer`` too. It may answer no for a pattern that is within, never yes for one that is not."""
+
+    inner_parts, outer_parts = _pattern_parts(inner), _pattern_parts(outer)
+    if not any(_has_glob(s) for s in inner_parts):
+        return route_matches(outer, inner)
+    if len(inner_parts) != len(outer_parts):
+        return False
+    return all(
+        i == o or (i != "**" and o == "*") or (not _has_glob(i) and o != "**" and fnmatch.fnmatchcase(i, o))
+        for i, o in zip(inner_parts, outer_parts)
+    )
+
+
+def _server_views(rel_path: str) -> set[str]:
+    """The paths a server may take ``rel_path`` for.
+
+    Percent decoded once and twice, read under NFKC, with ``\\`` read as ``/`` and
+    empty segments merged, with and without each segment's ``;`` parameter (a
+    servlet container cuts it), and with and without a final ``.ext`` (suffix
+    routing in Spring and Rails).
+    """
+
+    once = urllib.parse.unquote(rel_path)
+    twice = urllib.parse.unquote(once)
+    views = {rel_path}
+    for form in (rel_path, once, twice):
+        segments = [s for s in re.split(r"[/\\]", unicodedata.normalize("NFKC", form)) if s]
+        for cut in (False, True):
+            parts = [s.split(";", 1)[0] for s in segments] if cut else list(segments)
+            parts = [s for s in parts if s]
+            variants = [parts]
+            if parts and "." in parts[-1].lstrip("."):
+                last = parts[-1]
+                variants += [parts[:-1] + [last.rsplit(".", 1)[0]], parts[:-1] + [last.split(".", 1)[0]]]
+            views.update("/" + "/".join(v) for v in variants)
+    return views
+
+
+def _reaches(pattern: str, views: set[str]) -> bool:
+    folded = pattern.casefold()
+    return any(route_matches(pattern, v) or route_matches(folded, v.casefold()) for v in views)
+
+
+def _unnamed_write_routes(target: "Target", method: str, rel_path: str, read_patterns: Sequence[str]) -> list[WriteRoute]:
+    """The write routes a read with ``method`` on ``rel_path`` would reach.
+
+    A write route counts unless a read route that matches the path lies within
+    the write route's own pattern (a REST service names ``GET /entries`` beside
+    ``POST /entries``), and it always counts when the read uses the write's own
+    method. A catch-all such as ``/**`` never names a write route.
+    """
+
+    if not target.write_routes:
+        return []
+    views = _server_views(rel_path)
+    reached = []
+    for route in target.write_routes:
+        if not _reaches(route.pattern, views):
+            continue
+        named = route.method != method and any(
+            route_matches(p, rel_path) and _pattern_within(p, route.pattern) for p in read_patterns
+        )
+        if not named:
+            reached.append(route)
+    return reached
+
+
 def _parse_base(url: str, *, origin_hint: str) -> ResolvedBase:
     if _CONTROL_OR_SPACE.search(url) or "\\" in url:
         raise NotConfigured(f"{origin_hint}: the base URL holds a space, a backslash or a control character.")
-    parts = urllib.parse.urlsplit(url)
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        raise NotConfigured(f"{origin_hint}: the base URL cannot be read as a URL.") from None
     if parts.scheme.lower() != "https":
         raise NotConfigured(f"{origin_hint}: the base URL must use https.")
     if "@" in parts.netloc:
@@ -384,14 +584,19 @@ def _check_rel_path(rel: str, *, refuse: type[KitError] = RequestRefused) -> Non
     for decoded in (rel, once, twice):
         if _CONTROL.search(decoded):
             raise refuse("The path holds a control character, also when decoded.")
-        for part in re.split(r"[/\\]", decoded):
-            if part in {".", ".."}:
+        if _PERCENT_U.search(decoded):
+            raise refuse("The path holds a %u escape, which some servers decode. Percent encode as %XX.")
+        # Servlet containers cut a ';' parameter before they resolve dots, so '..;' acts as '..',
+        # and some servers read fullwidth full stops under NFKC.
+        for part in re.split(r"[/\\]", unicodedata.normalize("NFKC", decoded)):
+            if part.split(";", 1)[0] in {".", ".."}:
                 raise refuse("The path holds a '.' or '..' segment, also when decoded. Name the resource directly.")
 
 
 def _origin_of(url: httpx.URL) -> Optional[Origin]:
     scheme = (url.scheme or "").lower()
-    host = (url.host or "").lower()
+    # raw_host is what the connection, SNI and Host header use; url.host decodes punycode.
+    host = url.raw_host.decode("ascii", errors="replace").lower()
     if scheme not in {"http", "https"} or not host:
         return None
     port = url.port if url.port is not None else (443 if scheme == "https" else 80)
@@ -509,6 +714,7 @@ class SafeHttpClient:
         prepared = self._prepare(target, base, path, query)
         if any(route_matches(p, prepared.rel_path) for p in target.read_post_routes):
             method = "POST"
+            read_patterns = target.read_post_routes
             body = {} if json_body is None else json_body
         else:
             if json_body is not None:
@@ -522,7 +728,17 @@ class SafeHttpClient:
                     f"({', '.join(target.get_routes) or 'none'})."
                 )
             method = "GET"
+            read_patterns = target.get_routes
             body = None
+        reached = _unnamed_write_routes(target, method, prepared.rel_path, read_patterns)
+        if reached:
+            declared = ", ".join(f"{r.method} {r.pattern}" for r in reached)
+            raise RequestRefused(
+                f"{target.name}: {prepared.rel_path} is the path of a declared write ({declared}), so the read tool "
+                f"does not send {method} there: some services run the action whatever the method. If this is a "
+                "change, use the write tool, which asks the person first. If it is a read, the extension's author "
+                "has to name the path in a read route."
+            )
         return self._send(target, base, method, prepared, body, accept, timeout_s, environ)
 
     def write(
@@ -661,8 +877,11 @@ class SafeHttpClient:
         return PreparedRequest(rel_path, tuple(merged))
 
     def _reduce_full_url(self, target: Target, base: ResolvedBase, url: str) -> tuple[str, tuple[tuple[str, str], ...]]:
-        parts = urllib.parse.urlsplit(url)
         own = f"Pass a path relative to {base.url}, or a full URL on {base.origin} only."
+        try:
+            parts = urllib.parse.urlsplit(url)
+        except ValueError:
+            raise RequestRefused(f"{target.name}: the URL cannot be read. {own}") from None
         if parts.scheme.lower() != "https":
             raise RequestRefused(f"{target.name}: only https URLs on this target's own host are accepted. {own}")
         if "@" in parts.netloc:
@@ -705,6 +924,13 @@ class SafeHttpClient:
             return headers, params
         if _CONTROL.search(value):
             raise NotConfigured(f"{credential.env} holds a control character.")
+        if len(value) < MIN_REDACTION_LENGTH:
+            raise NotConfigured(
+                f"{credential.env} is shorter than {MIN_REDACTION_LENGTH} characters, too short for the extension "
+                "to keep it out of results. Check the value in the extension's settings in Biorouter."
+            )
+        if credential.scheme in {"bearer", "header"} and not value.isascii():
+            raise NotConfigured(f"{credential.env} holds a character outside ASCII, which a header cannot carry.")
         if credential.scheme == "bearer":
             headers["Authorization"] = f"Bearer {value}"
         elif credential.scheme == "basic":
@@ -765,7 +991,12 @@ class SafeHttpClient:
         timeout_s: Optional[float],
         environ: Mapping[str, str],
     ) -> dict[str, Any]:
-        if accept is not None and (not isinstance(accept, str) or not _ACCEPT.fullmatch(accept.strip())):
+        if accept is not None and (
+            not isinstance(accept, str)
+            or len(accept) > MAX_ACCEPT_LENGTH
+            or not accept.isascii()
+            or not _ACCEPT.fullmatch(accept.strip())
+        ):
             raise RequestRefused("accept must be a media type such as application/json.")
         content: Optional[bytes] = None
         if json_body is not None:
@@ -775,7 +1006,8 @@ class SafeHttpClient:
                 raise RequestRefused("json_body must be plain JSON.") from None
             if len(content) > MAX_REQUEST_BODY_BYTES:
                 raise RequestRefused("json_body is too large.")
-        limit = float(target.timeout_s) if timeout_s is None else max(1.0, min(float(timeout_s), MAX_TIMEOUT_S))
+        # A caller may shorten the target's own time limit, never lengthen it.
+        limit = float(target.timeout_s) if timeout_s is None else max(1.0, min(float(timeout_s), float(target.timeout_s)))
         cap = int(target.max_response_bytes)
         secret_forms = self._secret_forms(environ)
         auth_headers, auth_params = self._auth(target, environ)
@@ -1003,64 +1235,122 @@ def _normalise_query(query: Optional[Mapping[str, Any]]) -> list[tuple[str, str]
 
 
 class _Inflater:
-    """Undo gzip or deflate in bounded steps, so a small reply cannot grow without limit."""
+    """Undo gzip or deflate in bounded steps, so a small reply cannot grow without limit.
+
+    Each call inflates at most ``budget + 1`` bytes. A gzip body may be a series
+    of members (RFC 1952; bgzip writes one, and so does ``cat a.gz b.gz``), and
+    each member is inflated in turn within the same budget. Once the compressed
+    data ends nothing more is inflated or kept: bytes after it that do not start
+    another gzip member set ``trailing``, and the caller stops reading. A body that
+    cannot be inflated is an ``UpstreamError``.
+    """
 
     def __init__(self, encoding: str) -> None:
         encoding = encoding.strip().lower()
+        self.trailing = False
+        self._held = False
+        self._ended = False
+        self._pending = b""
+        self._z: Any = None
         if encoding in {"", "identity"}:
             self._mode = "identity"
-            self._z = None
         elif encoding in {"gzip", "x-gzip"}:
-            self._mode = "zlib"
-            self._z = zlib.decompressobj(16 + zlib.MAX_WBITS)
+            self._mode = "gzip"
         elif encoding == "deflate":
             self._mode = "deflate"
-            self._z = None
-            self._pending = b""
         else:
             raise UpstreamError(f"The service answered with an encoding the extension did not ask for ({encoding}).")
+
+    @property
+    def compressed(self) -> bool:
+        return self._mode != "identity"
 
     def feed(self, data: bytes, budget: int) -> bytes:
         if self._mode == "identity":
             return data[: budget + 1]
-        if self._mode == "deflate" and self._z is None:
-            # RFC 9110 deflate is zlib wrapped; some servers send raw deflate.
-            self._pending += data
-            if len(self._pending) < 2:
-                return b""
-            first, second = self._pending[0], self._pending[1]
-            wrapped = (first & 0x0F) == 8 and ((first << 8) | second) % 31 == 0
-            self._z = zlib.decompressobj(zlib.MAX_WBITS if wrapped else -zlib.MAX_WBITS)
-            data, self._pending = self._pending, b""
-        assert self._z is not None
-        out = self._z.decompress(data, budget + 1)
-        return out
+        try:
+            return self._inflate(data, budget + 1)
+        except zlib.error:
+            raise UpstreamError("The service sent a compressed reply that cannot be decoded.") from None
+
+    def _inflate(self, data: bytes, room: int) -> bytes:
+        out: list[bytes] = []
+        while data and not self.trailing:
+            if self._z is None:
+                data, self._pending = self._pending + data, b""
+                if self._ended:  # a deflate body is one stream
+                    self.trailing = True
+                    break
+                if len(data) < 2:
+                    self._pending = data
+                    break
+                if self._mode == "gzip":
+                    if data[:2] != b"\x1f\x8b":
+                        self.trailing = True
+                        break
+                    self._z = zlib.decompressobj(16 + zlib.MAX_WBITS)
+                else:
+                    # RFC 9110 deflate is zlib wrapped; some servers send raw deflate.
+                    wrapped = (data[0] & 0x0F) == 8 and ((data[0] << 8) | data[1]) % 31 == 0
+                    self._z = zlib.decompressobj(zlib.MAX_WBITS if wrapped else -zlib.MAX_WBITS)
+            if room <= 0:
+                self._held = True
+                break
+            chunk = self._z.decompress(data, room)
+            out.append(chunk)
+            room -= len(chunk)
+            if self._z.unconsumed_tail:
+                self._held = True
+                break
+            if not self._z.eof:
+                break
+            # The stream ended. Hand what follows it to the next member, never back to this one,
+            # which would keep every further byte in unused_data.
+            data, self._z = self._z.unused_data, None
+            self._ended = self._mode == "deflate"
+        return b"".join(out)
 
     def leftover(self) -> bool:
-        return bool(self._z is not None and self._z.unconsumed_tail)
+        return self._held
 
     def finish(self, budget: int) -> bytes:
+        if self._pending:
+            self.trailing = True
+            return b""
         if self._z is None:
             return b""
-        return self._z.flush()[: budget + 1]
+        try:
+            return self._z.flush()[: budget + 1]
+        except zlib.error:
+            raise UpstreamError("The service sent a compressed reply that cannot be decoded.") from None
+
+
+def _raw_limit(cap: int, compressed: bool) -> int:
+    """How many raw bytes a reply may carry for a decoded body of ``cap`` bytes."""
+
+    return (min(2 * cap, MAX_RESPONSE_BYTES) if compressed else cap) + RAW_READ_SLACK_BYTES
 
 
 def _read_capped(response: httpx.Response, cap: int, deadline: float) -> tuple[bytes, bool]:
     inflater = _Inflater(response.headers.get("content-encoding", ""))
+    raw_left = _raw_limit(cap, inflater.compressed)
     chunks: list[bytes] = []
     size = 0
     for raw in response.iter_raw():
         if time.monotonic() > deadline:
             raise UpstreamError("The reply took longer than the time limit.")
+        over = len(raw) > raw_left
+        raw = raw[:raw_left]
+        raw_left -= len(raw)
         budget = cap - size
         data = inflater.feed(raw, budget)
-        if len(data) > budget or inflater.leftover():
+        if over or len(data) > budget or inflater.leftover() or inflater.trailing:
             chunks.append(data[:budget])
             return b"".join(chunks), True
         chunks.append(data)
         size += len(data)
     tail = inflater.finish(cap - size)
-    if len(tail) > cap - size:
+    if len(tail) > cap - size or inflater.trailing:
         chunks.append(tail[: cap - size])
         return b"".join(chunks), True
     chunks.append(tail)
@@ -1085,6 +1375,8 @@ def _redact_obj(value: Any, forms: Sequence[str]) -> Any:
         return value
     if isinstance(value, str):
         return _redact_text(value, forms)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return REDACTED if _redact_text(str(value), forms) != str(value) else value  # a key echoed as a JSON number
     if isinstance(value, list):
         return [_redact_obj(v, forms) for v in value]
     if isinstance(value, dict):

@@ -22,6 +22,9 @@ Checks, for every target T of the adapter:
 * a redirect within T's origin is followed and keeps the credential on T;
 * more than three redirects stop with an error;
 * a read never sends a write method, and a JSON body on a GET route is refused;
+* a read of a write route's path is refused, and nothing is sent, unless a read
+  route without ``**`` names that path (a REST service's ``GET /entries`` beside
+  ``POST /entries``);
 * a query credential's parameter cannot be set by the model;
 * writes go only to declared routes with the declared method, and the write
   tool is absent when no route is declared;
@@ -489,7 +492,17 @@ async def run_battery(
             await refused("query_credential:reserved", name, {"target": name, "path": sample, "query": {target.credential.query_param: "attacker"}})
             await refused("query_credential:reserved_in_path", name, {"target": name, "path": f"{sample}?{target.credential.query_param}=attacker"})
 
-        # 10. Writes.
+        # 10. A read does not reach the path of a write route that no read route names.
+        read_patterns = (*target.get_routes, *target.read_post_routes)
+        for route in target.write_routes:
+            if "**" in route.pattern:
+                continue
+            write_path = _sample_from_pattern(route.pattern)
+            if any(route_matches(p, write_path) and "**" not in p for p in read_patterns):
+                continue
+            await refused(f"read:write_path_refused:{route.method} {route.pattern}", name, {"target": name, "path": write_path})
+
+        # 11. Writes.
         if target.write_routes and write_tool:
             route = target.write_routes[0]
             write_sample = _sample_from_pattern(route.pattern)
