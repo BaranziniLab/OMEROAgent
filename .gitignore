@@ -2,5 +2,7 @@
 __pycache__/
 *.pyc
 dist/
-.ruff_cache/
+previous/
+.env
+.env.*
 .DS_Store

@@ -1,3 +1,3 @@
-"""OMEROAgent package."""
+"""OMEROAgent, a Biorouter extension built on the BRXT adapter kit."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

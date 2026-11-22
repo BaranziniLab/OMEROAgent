@@ -2,3 +2,6 @@ OMEROAgent
 Copyright 2026 Baranzini Lab, University of California, San Francisco
 
 Licensed under the Apache License, Version 2.0.
+
+Built with the Biorouter BRXT adapter kit 1.0.0 (Apache-2.0), whose
+files are vendored under src/omeroagent/_kit/ and tests/kit_testing/.

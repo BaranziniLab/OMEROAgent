@@ -1,0 +1,14 @@
+{
+  "kit_spec": 1,
+  "service": "omero",
+  "service_title": "OMERO",
+  "kind": "tombstone",
+  "notice": {
+    "status": "retired",
+    "date": "2026-11-22",
+    "reason": "OMERO.web logs in with a session and a CSRF token against your own server. This extension sent Basic authentication to a placeholder address, so it never worked, and no OMERO account was available to test a rebuild.",
+    "use_instead": "Browse your images in OMERO.web in the browser, and use the microscopy-image-analysis skill in BAAM to analyse images you export."
+  },
+  "id": "omeroagent",
+  "display_name": "OMEROAgent"
+}

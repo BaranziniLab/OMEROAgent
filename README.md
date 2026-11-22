@@ -1,43 +1,37 @@
 # OMEROAgent
 
-MCP access pattern for OMERO image repositories, project/dataset/image metadata, and web/API endpoint inspection for microscopy data review.
+Retired. This extension no longer calls OMERO and only reports that it is retired. Remove it.
 
-This repository follows the BioRouter `.brxt` extension convention used by `SPOKEAgent` and `UCSFOMOPAgent`: a root `manifest.json`, Python package under `src/`, and optional bundled skills under `skills/`.
+Current version: **0.2.0**
+
+> **Retired.** OMEROAgent was retired on 2026-11-22 and no longer calls any service. Why: OMERO.web logs in with a session and a CSRF token against your own server. This extension sent Basic authentication to a placeholder address, so it never worked, and no OMERO account was available to test a rebuild. Use instead: Browse your images in OMERO.web in the browser, and use the microscopy-image-analysis skill in BAAM to analyse images you export.
+
+This is the final release of a retired Biorouter extension. It replaces every
+earlier tool with one, `omero_status`, which shows the notice above. It holds no
+credentials, reads no setting and calls no service. Remove the extension in
+Biorouter once you no longer need the notice.
 
 ## Tools
 
-- `get_omeroagent_status`: report configured environment variables without revealing secrets.
-- `get_omeroagent_request_plan`: explain whether an API request is read-only or requires explicit mutation approval.
-- `call_omeroagent_api`: call a platform API endpoint with write methods blocked unless `allow_mutation=true`.
-- `summarize_omeroagent_resource`: summarize a JSON export or API payload without making a network call.
+- `omero_status`: shows why OMEROAgent was retired and what to use instead. It calls no service.
 
-## Configuration
+## Bundled skills
 
-| Variable | Required | Secret | Purpose |
-|---|---:|---:|---|
-| `OMERO_BASE_URL` | true | false | OMERO web/API base URL |
-| `OMERO_USERNAME` | false | true | OMERO username if the server requires basic auth or token exchange |
-| `OMERO_PASSWORD` | false | true | OMERO password or token if the server requires it |
-| `OMERO_LOG_LEVEL` | false | false | Logging level |
+Every skill an earlier release bundled is kept, and each now says where its content
+moved. An update never deletes a file an earlier version installed, so keeping the
+paths is what replaces the old instructions.
 
-
-## Build
+## Develop and release
 
 ```bash
 uv sync
-scripts/build_brxt.sh
+uv run python -m unittest discover -s tests -v
+uv run python scripts/build_brxt.py
 ```
 
-The bundle is written to `dist/omeroagent.brxt`.
-
-## Install in BioRouter
-
-```bash
-biorouter extension install dist/omeroagent.brxt
-```
-
-Add the required secrets with `--secret KEY=value` or configure them in the BioRouter UI.
+Do not edit `src/omeroagent/_kit/` or `tests/kit_testing/`: they are vendored from the BRXT
+adapter kit in the Biorouter repository (`scripts/brxt-adapter-kit/`).
 
 ## License
 
-Apache-2.0. See `LICENSE`.
+Apache-2.0. See `LICENSE` and `NOTICE`.

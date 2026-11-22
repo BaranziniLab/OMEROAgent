@@ -1,4 +1,4 @@
-from omeroagent.cli import main
+from omeroagent.server import main
 
 if __name__ == "__main__":
     main()

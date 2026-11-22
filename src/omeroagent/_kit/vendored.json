@@ -1,0 +1,13 @@
+{
+  "kit_version": "1.0.0",
+  "files": {
+    "src/omeroagent/_kit/__init__.py": "9d43b5034c956157c726bc1ff065fad3feb0aa28f2fe40cea44520f4a51b2aa0",
+    "src/omeroagent/_kit/safe_http.py": "cf2bdef29ffa4903a991572585e210b88a2feea170290033f73df4bbafa6b07d",
+    "src/omeroagent/_kit/spec.py": "b5ca55ebb99f38a1ea932fcb3347bbde20a1c186b04a55bcb25e4596153ad797",
+    "src/omeroagent/_kit/tools.py": "472617d4b4d06ede45124d322c2df6a9b283106e1042a59f72e2195fddf8719d",
+    "tests/kit_testing/__init__.py": "952c691107878f8e29833a9d3c51dfbe1a986d8e3373b666ced0b21096e9481a",
+    "tests/kit_testing/echo_server.py": "88f6999853c208e9b16f201a024c54bd64d6c126998912acc4361cf2c3f4f36e",
+    "tests/kit_testing/leak_suite.py": "9f2a04658ec271f908fa8ff4540e272d301baaa11a6145c06bba64edb79ffa76",
+    "tests/kit_testing/stdio_probe.py": "c84c6da4f0abb4356ea9488fafec388b1b05dc8a2a128ad7d654c42d85e429b9"
+  }
+}

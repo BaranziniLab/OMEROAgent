@@ -1,25 +1,10 @@
 ---
 name: omero-imaging-data
-description: Use OMEROAgent when working with OMERO platform data, API resources, provenance, or reproducibility checks from inside BioRouter.
-license: Apache-2.0
-user-invocable: false
+description: "Retired with OMEROAgent. This skill no longer holds instructions."
 ---
 
-# OMEROAgent Skill
+# omero-imaging-data has moved
 
-Use this extension to inspect OMERO project, dataset, image, and annotation endpoints. Keep downloads scoped and avoid PHI-bearing image exports unless permitted.
+This skill was bundled with OMEROAgent, which is retired. OMEROAgent never reached an OMERO server: OMERO.web needs a session login that the extension did not perform. Browse your images in OMERO.web in the browser, and use the `microscopy-image-analysis` skill from BAAM to analyse images you export. Remove OMEROAgent from Biorouter.
 
-## Operating rules
-
-- Start with `get_omeroagent_status` to confirm whether credentials and base URLs are configured.
-- Use `get_omeroagent_request_plan` before any endpoint that may create, update, launch, upload, or delete a resource.
-- Prefer read-only `GET` requests through `call_omeroagent_api` while exploring.
-- Do not pass `allow_mutation=true` unless the user has explicitly approved the exact operation, target resource, and expected side effect.
-- Preserve platform IDs, versions, owners/authors, timestamps, and URLs in any report.
-- Never print API tokens, passwords, bearer headers, or session cookies.
-
-## Useful starting endpoints
-
-- `/api/`
-- `/webclient/api/datasets/`
-- `/webclient/api/images/`
+OMEROAgent was retired on 2026-11-22 and no longer calls any service. Why: OMERO.web logs in with a session and a CSRF token against your own server. This extension sent Basic authentication to a placeholder address, so it never worked, and no OMERO account was available to test a rebuild. Use instead: Browse your images in OMERO.web in the browser, and use the microscopy-image-analysis skill in BAAM to analyse images you export.
